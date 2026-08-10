@@ -8,10 +8,36 @@ import java.util.Scanner;
 import javax.sound.sampled.AudioInputStream;
 import javax.sound.sampled.AudioSystem;
 import javax.sound.sampled.Clip;
+import javax.sound.sampled.LineEvent;
 import javax.sound.sampled.LineUnavailableException;
 import javax.sound.sampled.UnsupportedAudioFileException;
 
 public class AudioPlayer {
+
+    // Plays a short, one-shot sound effect (shot fired, wall destroyed,
+    // ship exploded, etc.) - separate from this class's normal instance
+    // usage above, which is built for a single continuously looping
+    // background track (see the constructor's Clip.LOOP_CONTINUOUSLY).
+    // Each call here opens its own fresh, short-lived Clip and closes it
+    // automatically once playback finishes, so multiple effects can
+    // overlap (e.g. firing rapidly) without cutting each other off or
+    // interfering with any looping background music already playing.
+    public static void playOnce(String filePath) {
+        try {
+            AudioInputStream audioIn = AudioSystem.getAudioInputStream(new File(filePath).getAbsoluteFile());
+            Clip clip = AudioSystem.getClip();
+            clip.open(audioIn);
+            clip.start();
+
+            clip.addLineListener(event -> {
+                if (event.getType() == LineEvent.Type.STOP) {
+                    clip.close();
+                }
+            });
+        } catch (Exception e) {
+            System.err.println("Error playing sound effect '" + filePath + "': " + e.getMessage());
+        }
+    }
 
     // to store current position
     Long currentFrame;

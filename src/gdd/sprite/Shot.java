@@ -11,6 +11,14 @@ public class Shot extends Sprite {
     public Shot() {
     }
 
+    @Override
+    public void act() {
+        // Required override to satisfy the abstract Sprite.act() contract.
+        // Shot movement (moving upward each frame) is currently handled
+        // directly inside Scene1's update() method via shot.setY(y - 20),
+        // not through this method. Left empty.
+    }
+
     public Shot(int x, int y) {
 
         initShot(x, y);

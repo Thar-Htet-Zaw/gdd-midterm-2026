@@ -30,5 +30,12 @@ public class Explosion extends Sprite {
         // this.x += direction;
     }
 
+    @Override
+    public void act() {
+        // Required override to satisfy the abstract Sprite.act() contract.
+        // Explosions don't move on their own (they just visibly count
+        // down via visibleCountDown(), handled in Scene1). Left empty.
+    }
+
 
 }

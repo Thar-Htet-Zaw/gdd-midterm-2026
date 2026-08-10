@@ -11,6 +11,7 @@ public class Player extends Sprite {
     private static final int START_Y = 540;
     private int width;
     private int currentSpeed = 2;
+    private int dy; // vertical velocity, mirrors inherited dx for horizontal movement
 
     private Rectangle bounds = new Rectangle(175,135,17,32);
 
@@ -53,6 +54,16 @@ public class Player extends Sprite {
         if (x >= BOARD_WIDTH - 2 * width) {
             x = BOARD_WIDTH - 2 * width;
         }
+
+        y += dy;
+
+        if (y <= 2) {
+            y = 2;
+        }
+
+        if (y >= GROUND - PLAYER_HEIGHT) {
+            y = GROUND - PLAYER_HEIGHT;
+        }
     }
 
     public void keyPressed(KeyEvent e) {
@@ -65,6 +76,14 @@ public class Player extends Sprite {
         if (key == KeyEvent.VK_RIGHT) {
             dx = currentSpeed;
         }
+
+        if (key == KeyEvent.VK_UP) {
+            dy = -currentSpeed;
+        }
+
+        if (key == KeyEvent.VK_DOWN) {
+            dy = currentSpeed;
+        }
     }
 
     public void keyReleased(KeyEvent e) {
@@ -76,6 +95,14 @@ public class Player extends Sprite {
 
         if (key == KeyEvent.VK_RIGHT) {
             dx = 0;
+        }
+
+        if (key == KeyEvent.VK_UP) {
+            dy = 0;
+        }
+
+        if (key == KeyEvent.VK_DOWN) {
+            dy = 0;
         }
     }
 }

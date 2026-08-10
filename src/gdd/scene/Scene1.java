@@ -11,6 +11,7 @@ import gdd.sprite.Enemy;
 import gdd.sprite.Explosion;
 import gdd.sprite.Player;
 import gdd.sprite.Shot;
+import gdd.tile.Wall;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Font;
@@ -58,32 +59,43 @@ public class Scene1 extends JPanel {
     private int currentRow = -1;
     // TODO load this map from a file
     private int mapOffset = 0;
-    private final int[][] MAP = {
-        {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-        {0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-        {0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-        {0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
-        {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-        {0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-        {0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-        {0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
-    };
+
+    private static final int MAP_ROWS = 32;
+    private static final int MAP_COLS = 12;
+
+    // Reusing explode.wav for wall destruction, since a wall breaking is
+    // reasonably an "explosion"-type event and no dedicated wall-break
+    // sound file was provided.
+    private static final String WALL_BREAK_SOUND = "src/audio/explode.wav";
+
+    // Same explode.wav reused for the player ship exploding on wall
+    // contact - kept as a separate named constant so it can easily be
+    // pointed at a different sound later if one is added.
+    private static final String PLAYER_EXPLODE_SOUND = "src/audio/explode.wav";
+
+    // Generated at gameInit() time - see generateMap(). Mixes diagonal
+    // staircase wall segments and horizontal band wall segments randomly,
+    // so the layout is different each playthrough instead of one fixed
+    // hardcoded pattern.
+    private int[][] MAP;
+
+    // Wall tiles currently visible on screen this frame, rebuilt every
+    // frame by updateWalls() based on scroll position. Used by both
+    // drawMap() (rendering) and update() (collision, added in a later step)
+    // so both stay in sync.
+    private List<Wall> walls;
+
+    // Permanently tracks which MAP cells have been destroyed by a shot,
+    // indexed [row][col] matching MAP. Unlike `walls`, this persists across
+    // frames (walls themselves are rebuilt every frame as the map scrolls).
+    private boolean[][] wallDestroyed;
+
+    // Decorative scrolling starfield background - fully independent of the
+    // wall MAP grid, so stars and walls no longer share the same data.
+    // Stars are drawn first (background), walls drawn on top afterward.
+    private static final int STAR_COUNT = 50;
+    private int[] starX;
+    private int[] starY;
 
     private HashMap<Integer, SpawnDetails> spawnMap = new HashMap<>();
     private AudioPlayer audioPlayer;
@@ -158,6 +170,17 @@ public class Scene1 extends JPanel {
         powerups = new ArrayList<>();
         explosions = new ArrayList<>();
         shots = new ArrayList<>();
+        walls = new ArrayList<>();
+
+        MAP = generateMap();
+        wallDestroyed = new boolean[MAP.length][MAP[0].length];
+
+        starX = new int[STAR_COUNT];
+        starY = new int[STAR_COUNT];
+        for (int i = 0; i < STAR_COUNT; i++) {
+            starX[i] = randomizer.nextInt(BOARD_WIDTH);
+            starY[i] = randomizer.nextInt(BOARD_HEIGHT);
+        }
 
         // for (int i = 0; i < 4; i++) {
         // for (int j = 0; j < 6; j++) {
@@ -170,8 +193,95 @@ public class Scene1 extends JPanel {
         // shot = new Shot();
     }
 
+    // Procedurally builds the wall MAP grid by randomly mixing two segment
+    // types down the length of the map:
+    //  - "diagonal" segments: a single wall cell per row, shifting one
+    //    column left/right each row (staircase pattern, like the original
+    //    fixed design).
+    //  - "horizontal" segments: one row gets a wide band of wall cells
+    //    with a gap left open, so the player always has room to pass
+    //    through rather than being fully blocked.
+    // Which segment type appears, how long it runs, and where gaps/columns
+    // fall is randomized using the existing `randomizer`, so the layout is
+    // different every time the scene starts instead of one fixed pattern.
+    private int[][] generateMap() {
+        int[][] map = new int[MAP_ROWS][MAP_COLS];
+
+        int col = randomizer.nextInt(MAP_COLS);
+        int direction = randomizer.nextBoolean() ? 1 : -1;
+
+        int row = 0;
+        while (row < MAP_ROWS) {
+            int segmentLength = 3 + randomizer.nextInt(4); // 3-6 rows per segment
+            segmentLength = Math.min(segmentLength, MAP_ROWS - row);
+
+            boolean horizontalSegment = randomizer.nextBoolean();
+
+            if (horizontalSegment) {
+                // Place a horizontal wall band with a gap on one row
+                // within this segment; leave the rest of the segment clear
+                // so horizontal and diagonal sections feel distinct.
+                int wallRow = row + randomizer.nextInt(segmentLength);
+                int gapWidth = 2 + randomizer.nextInt(2); // 2-3 column gap
+                int gapStart = randomizer.nextInt(MAP_COLS - gapWidth + 1);
+
+                for (int c = 0; c < MAP_COLS; c++) {
+                    if (c < gapStart || c >= gapStart + gapWidth) {
+                        map[wallRow][c] = 1;
+                    }
+                }
+
+                // Keep the diagonal anchor column in bounds for whenever
+                // the next diagonal segment picks up again.
+                col = Math.max(0, Math.min(MAP_COLS - 1, col));
+            } else {
+                // Continue a diagonal staircase for this segment's rows.
+                for (int r = row; r < row + segmentLength; r++) {
+                    map[r][col] = 1;
+                    col += direction;
+                    if (col <= 0 || col >= MAP_COLS - 1) {
+                        direction *= -1;
+                        col = Math.max(0, Math.min(MAP_COLS - 1, col));
+                    }
+                }
+            }
+
+            row += segmentLength;
+        }
+
+        return map;
+    }
+
+    // Draws the decorative scrolling starfield background. Fully
+    // independent of the wall MAP - star positions have nothing to do
+    // with which cells contain walls, so this can be drawn first as a
+    // background layer with walls drawn cleanly on top afterward.
+    private void drawStarfield(Graphics g) {
+        g.setColor(Color.WHITE);
+        for (int i = 0; i < STAR_COUNT; i++) {
+            int y = (starY[i] + frame) % BOARD_HEIGHT;
+            g.fillOval(starX[i], y, 2, 2);
+        }
+    }
     private void drawMap(Graphics g) {
-        // Draw scrolling starfield background
+        // Background layer: decorative starfield, independent of walls.
+        drawStarfield(g);
+
+        // Foreground layer: wall tiles. The `walls` list is already
+        // computed for this frame by updateWalls() (called from update(),
+        // before repaint), so rendering here just draws whatever is
+        // currently active - drawn after stars so walls sit cleanly on
+        // top rather than blending with them.
+        for (Wall wall : walls) {
+            drawWallTile(g, wall.getX(), wall.getY(), wall.getWidth(), wall.getHeight());
+        }
+    }
+
+    // Rebuilds the `walls` list of currently visible wall tiles based on
+    // the current scroll position. Skips any MAP cell already marked
+    // destroyed in wallDestroyed. Called once per frame from update().
+    private void updateWalls() {
+        walls.clear();
 
         // Calculate smooth scrolling offset (1 pixel per frame)
         int scrollOffset = (frame) % BLOCKHEIGHT;
@@ -186,7 +296,6 @@ public class Scene1 extends JPanel {
             int mapRow = (baseRow + screenRow) % MAP.length;
 
             // Calculate Y position for this row
-            // int y = (screenRow * BLOCKHEIGHT) - scrollOffset;
             int y = BOARD_HEIGHT - ( (screenRow * BLOCKHEIGHT) - scrollOffset );
 
             // Skip if row is completely off-screen
@@ -194,18 +303,46 @@ public class Scene1 extends JPanel {
                 continue;
             }
 
-            // Draw each column in this row
+            // Build a Wall tile for each solid, non-destroyed column in this row
             for (int col = 0; col < MAP[mapRow].length; col++) {
-                if (MAP[mapRow][col] == 1) {
-                    // Calculate X position
+                if (MAP[mapRow][col] == 1 && !wallDestroyed[mapRow][col]) {
                     int x = col * BLOCKWIDTH;
 
-                    // Draw a cluster of stars
-                    drawStarCluster(g, x, y, BLOCKWIDTH, BLOCKHEIGHT);
+                    Wall wall = new Wall(x, y, BLOCKWIDTH, BLOCKHEIGHT);
+                    wall.setMapCell(mapRow, col);
+                    walls.add(wall);
                 }
             }
         }
+    }
 
+    // Draws a single wall tile as a solid block with a border, so it reads
+    // clearly as level geometry (distinct from the enemy/player/powerup sprites).
+    // Draws a single wall tile as an armored "bunker panel" - a beveled
+    // block with corner rivets, fitting a Space Invaders sci-fi look
+    // instead of a flat gray rectangle.
+    private void drawWallTile(Graphics g, int x, int y, int width, int height) {
+        // Base panel (teal-green armor plating)
+        g.setColor(new Color(40, 180, 150));
+        g.fillRect(x, y, width, height);
+
+        // Beveled highlight edge (top-left), gives a raised 3D look
+        g.setColor(new Color(150, 255, 220));
+        g.fillRect(x, y, width, 3);
+        g.fillRect(x, y, 3, height);
+
+        // Beveled shadow edge (bottom-right)
+        g.setColor(new Color(10, 90, 70));
+        g.fillRect(x, y + height - 3, width, 3);
+        g.fillRect(x + width - 3, y, 3, height);
+
+        // Corner rivets/bolts for an armored panel feel
+        g.setColor(new Color(20, 60, 50));
+        int boltSize = 4;
+        g.fillOval(x + 4, y + 4, boltSize, boltSize);
+        g.fillOval(x + width - 8, y + 4, boltSize, boltSize);
+        g.fillOval(x + 4, y + height - 8, boltSize, boltSize);
+        g.fillOval(x + width - 8, y + height - 8, boltSize, boltSize);
     }
 
     private void drawStarCluster(Graphics g, int x, int y, int width, int height) {
@@ -374,6 +511,10 @@ public class Scene1 extends JPanel {
 
     private void update() {
 
+        // Rebuild the visible wall tiles for this frame first, so that
+        // collision checks later in this method (added in a following
+        // step) and drawMap() during repaint both use up-to-date data.
+        updateWalls();
 
         // Check enemy spawn
         // TODO this approach can only spawn one enemy at a frame
@@ -410,6 +551,36 @@ public class Scene1 extends JPanel {
         // player
         player.act();
 
+        // Player vs Wall collision: ship explodes on contact with a wall.
+        // Reuses the same dying/explosion mechanism already handled in
+        // drawPlayer() (isDying() -> die() + inGame = false), which was
+        // originally built for the old bomb-collision system - this just
+        // triggers that existing flow via wall contact instead.
+        if (player.isVisible()) {
+            int playerX = player.getX();
+            int playerY = player.getY();
+
+            for (Wall wall : walls) {
+                int wallX = wall.getX();
+                int wallY = wall.getY();
+                int wallWidth = wall.getWidth();
+                int wallHeight = wall.getHeight();
+
+                if (playerX < wallX + wallWidth
+                        && playerX + PLAYER_WIDTH > wallX
+                        && playerY < wallY + wallHeight
+                        && playerY + PLAYER_HEIGHT > wallY) {
+
+                    var ii = new ImageIcon(IMG_EXPLOSION);
+                    player.setImage(ii.getImage());
+                    player.setDying(true);
+
+                    AudioPlayer.playOnce(PLAYER_EXPLODE_SOUND);
+                    break; // ship is already exploding, no need to keep checking
+                }
+            }
+        }
+
         // Power-ups
         for (PowerUp powerup : powerups) {
             if (powerup.isVisible()) {
@@ -429,6 +600,7 @@ public class Scene1 extends JPanel {
 
         // shot
         List<Shot> shotsToRemove = new ArrayList<>();
+        List<Wall> wallsToRemove = new ArrayList<>();
         for (Shot shot : shots) {
 
             if (shot.isVisible()) {
@@ -456,6 +628,35 @@ public class Scene1 extends JPanel {
                     }
                 }
 
+                // Collision detection: shot and wall
+                // Mirrors the shot/enemy check above. On a hit, the wall's
+                // origin MAP cell is permanently marked destroyed (so it
+                // stays gone across frames/scrolling), a destroy sound
+                // plays, and the shot is consumed just like hitting an
+                // enemy.
+                for (Wall wall : walls) {
+                    int wallX = wall.getX();
+                    int wallY = wall.getY();
+                    int wallWidth = wall.getWidth();
+                    int wallHeight = wall.getHeight();
+
+                    if (shot.isVisible()
+                            && shotX >= (wallX)
+                            && shotX <= (wallX + wallWidth)
+                            && shotY >= (wallY)
+                            && shotY <= (wallY + wallHeight)) {
+
+                        wallDestroyed[wall.getMapRow()][wall.getMapCol()] = true;
+                        wallsToRemove.add(wall);
+
+                        AudioPlayer.playOnce(WALL_BREAK_SOUND);
+
+                        shot.die();
+                        shotsToRemove.add(shot);
+                        break; // this shot is used up, stop checking other walls
+                    }
+                }
+
                 int y = shot.getY();
                 // y -= 4;
                 y -= 20;
@@ -469,6 +670,7 @@ public class Scene1 extends JPanel {
             }
         }
         shots.removeAll(shotsToRemove);
+        walls.removeAll(wallsToRemove);
 
         // enemies
         // for (Enemy enemy : enemies) {

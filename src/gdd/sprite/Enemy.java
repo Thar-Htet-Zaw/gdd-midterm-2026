@@ -32,6 +32,15 @@ public class Enemy extends Sprite {
 
         this.x += direction;
     }
+
+    @Override
+    public void act() {
+        // Required override to satisfy the abstract Sprite.act() contract.
+        // Actual enemy movement is driven by act(int direction), which
+        // Scene1 calls explicitly each frame with the current direction.
+        // Left intentionally empty - this no-arg version is never used
+        // for real movement logic.
+    }
 /* 
     public Bomb getBomb() {
 

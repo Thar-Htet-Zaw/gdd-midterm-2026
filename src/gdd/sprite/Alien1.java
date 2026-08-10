@@ -67,5 +67,12 @@ public class Alien1 extends Enemy {
 
             return destroyed;
         }
+
+        @Override
+        public void act() {
+            // Required override to satisfy the abstract Sprite.act()
+            // contract. Bomb movement/state is currently commented out
+            // and unused elsewhere in Scene1. Left empty.
+        }
     }
 }
