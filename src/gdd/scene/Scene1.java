@@ -56,12 +56,18 @@ public class Scene1 extends JPanel {
     private Timer timer;
     private final Game game;
 
-    private int currentRow = -1;
     // TODO load this map from a file
-    private int mapOffset = 0;
+    // private int currentRow = -1;
+    // private int mapOffset = 0;
 
     private static final int MAP_ROWS = 32;
     private static final int MAP_COLS = 12;
+
+    // How long (in frames) to hold off spawning/scrolling any walls in
+    // after the scene starts. At 60 FPS (see `timer` below), 180 frames
+    // = 3 seconds. Gives the player a breather before the first wall
+    // tile ever scrolls into view, so they can't die instantly on spawn.
+    private static final int WALL_SPAWN_DELAY = 180;
 
     // Reusing explode.wav for wall destruction, since a wall breaking is
     // reasonably an "explosion"-type event and no dedicated wall-break
@@ -99,8 +105,8 @@ public class Scene1 extends JPanel {
 
     private HashMap<Integer, SpawnDetails> spawnMap = new HashMap<>();
     private AudioPlayer audioPlayer;
-    private int lastRowToShow;
-    private int firstRowToShow;
+    // private int lastRowToShow;
+    // private int firstRowToShow;
 
     public Scene1(Game game) {
         this.game = game;
@@ -210,19 +216,28 @@ public class Scene1 extends JPanel {
         int col = randomizer.nextInt(MAP_COLS);
         int direction = randomizer.nextBoolean() ? 1 : -1;
 
+        // Every wall segment is now followed by a mandatory clear gap
+        // (empty rows, no tiles at all) before the next one starts. This
+        // is what actually fixes the "clustered" feel - previously every
+        // single row belonged to some wall segment with no breathing room
+        // between them, so the map read as one dense, unbroken corridor.
+        final int MIN_CLEAR_ROWS = 3;
+        final int MAX_CLEAR_ROWS = 5;
+
         int row = 0;
         while (row < MAP_ROWS) {
-            int segmentLength = 3 + randomizer.nextInt(4); // 3-6 rows per segment
+            int segmentLength = 3 + randomizer.nextInt(3); // 3-5 rows per segment
             segmentLength = Math.min(segmentLength, MAP_ROWS - row);
 
             boolean horizontalSegment = randomizer.nextBoolean();
 
             if (horizontalSegment) {
-                // Place a horizontal wall band with a gap on one row
-                // within this segment; leave the rest of the segment clear
-                // so horizontal and diagonal sections feel distinct.
+                // Place a single-row horizontal wall band with a wide,
+                // generous gap so there's always a comfortable, clearly
+                // visible lane through it - rather than a couple of
+                // cramped columns.
                 int wallRow = row + randomizer.nextInt(segmentLength);
-                int gapWidth = 2 + randomizer.nextInt(2); // 2-3 column gap
+                int gapWidth = 4 + randomizer.nextInt(2); // 4-5 column gap (of 12)
                 int gapStart = randomizer.nextInt(MAP_COLS - gapWidth + 1);
 
                 for (int c = 0; c < MAP_COLS; c++) {
@@ -235,7 +250,8 @@ public class Scene1 extends JPanel {
                 // the next diagonal segment picks up again.
                 col = Math.max(0, Math.min(MAP_COLS - 1, col));
             } else {
-                // Continue a diagonal staircase for this segment's rows.
+                // Diagonal staircase, one tile per row - already fairly
+                // open (only 1 of 12 columns per row is blocked), kept as-is.
                 for (int r = row; r < row + segmentLength; r++) {
                     map[r][col] = 1;
                     col += direction;
@@ -247,6 +263,11 @@ public class Scene1 extends JPanel {
             }
 
             row += segmentLength;
+
+            // Insert a guaranteed clear gap between this segment and the
+            // next, so segments read as distinct, spaced-out obstacles
+            // rather than bleeding into one another.
+            row += MIN_CLEAR_ROWS + randomizer.nextInt(MAX_CLEAR_ROWS - MIN_CLEAR_ROWS + 1);
         }
 
         return map;
@@ -277,31 +298,51 @@ public class Scene1 extends JPanel {
         }
     }
 
-    // Rebuilds the `walls` list of currently visible wall tiles based on
-    // the current scroll position. Skips any MAP cell already marked
-    // destroyed in wallDestroyed. Called once per frame from update().
+    // Rebuilds the `walls` list of currently visible wall tiles. Each MAP
+    // row only starts existing on screen once enough scroll time has
+    // passed for it to have "descended" from just above the top edge -
+    // rows never appear pre-placed somewhere in the middle/bottom of the
+    // screen. This makes walls enter one row at a time from the top and
+    // drift down toward the player, the same way enemies spawn and move,
+    // instead of the whole visible area popping in fully-formed at once.
+    // Skips any MAP cell already marked destroyed in wallDestroyed.
+    // Called once per frame from update().
     private void updateWalls() {
         walls.clear();
 
-        // Calculate smooth scrolling offset (1 pixel per frame)
-        int scrollOffset = (frame) % BLOCKHEIGHT;
+        // Don't spawn/scroll any wall tiles in until WALL_SPAWN_DELAY has
+        // elapsed since the scene started, giving the player a moment to
+        // get oriented before the very first row even begins its descent.
+        if (frame < WALL_SPAWN_DELAY) {
+            return;
+        }
 
-        // Calculate which rows to draw based on screen position
-        int baseRow = (frame) / BLOCKHEIGHT;
-        int rowsNeeded = (BOARD_HEIGHT / BLOCKHEIGHT) + 2; // +2 for smooth scrolling
+        // Total pixels scrolled since walls started (1 px/frame).
+        int t = frame - WALL_SPAWN_DELAY;
 
-        // Loop through rows that should be visible on screen
-        for (int screenRow = 0; screenRow < rowsNeeded; screenRow++) {
-            // Calculate which MAP row to use (with wrapping)
-            int mapRow = (baseRow + screenRow) % MAP.length;
+        // Row index i "spawns" at the top edge (y = -BLOCKHEIGHT) at
+        // t = i * BLOCKHEIGHT, then moves down 1 px/frame afterward:
+        //   y(i, t) = t - (i + 1) * BLOCKHEIGHT
+        // So a row is only ever drawn once its own spawn time has been
+        // reached - it can't appear lower on screen before rows above it
+        // have already scrolled past. maxRowIndex is the newest row that
+        // has spawned by now; only that row and the ones still on screen
+        // above/below it need checking.
+        int maxRowIndex = t / BLOCKHEIGHT;
+        int rowsToCheck = (BOARD_HEIGHT / BLOCKHEIGHT) + 2; // +2 for smooth scrolling
+        int minRowIndex = Math.max(0, maxRowIndex - rowsToCheck + 1);
 
-            // Calculate Y position for this row
-            int y = BOARD_HEIGHT - ( (screenRow * BLOCKHEIGHT) - scrollOffset );
+        for (int i = minRowIndex; i <= maxRowIndex; i++) {
+            int y = t - (i + 1) * BLOCKHEIGHT;
 
             // Skip if row is completely off-screen
             if (y > BOARD_HEIGHT || y < -BLOCKHEIGHT) {
                 continue;
             }
+
+            // Loop back to the start of the generated MAP once we've
+            // scrolled through all of it, so the level repeats.
+            int mapRow = i % MAP.length;
 
             // Build a Wall tile for each solid, non-destroyed column in this row
             for (int col = 0; col < MAP[mapRow].length; col++) {
@@ -345,28 +386,28 @@ public class Scene1 extends JPanel {
         g.fillOval(x + width - 8, y + height - 8, boltSize, boltSize);
     }
 
-    private void drawStarCluster(Graphics g, int x, int y, int width, int height) {
-        // Set star color to white
-        g.setColor(Color.WHITE);
-
-        // Draw multiple stars in a cluster pattern
-        // Main star (larger)
-        int centerX = x + width / 2;
-        int centerY = y + height / 2;
-        g.fillOval(centerX - 2, centerY - 2, 4, 4);
-
-        // Smaller surrounding stars
-        g.fillOval(centerX - 15, centerY - 10, 2, 2);
-        g.fillOval(centerX + 12, centerY - 8, 2, 2);
-        g.fillOval(centerX - 8, centerY + 12, 2, 2);
-        g.fillOval(centerX + 10, centerY + 15, 2, 2);
-
-        // Tiny stars for more detail
-        g.fillOval(centerX - 20, centerY + 5, 1, 1);
-        g.fillOval(centerX + 18, centerY - 15, 1, 1);
-        g.fillOval(centerX - 5, centerY - 18, 1, 1);
-        g.fillOval(centerX + 8, centerY + 20, 1, 1);
-    }
+    // private void drawStarCluster(Graphics g, int x, int y, int width, int height) {
+    //     // Set star color to white
+    //     g.setColor(Color.WHITE);
+    //
+    //     // Draw multiple stars in a cluster pattern
+    //     // Main star (larger)
+    //     int centerX = x + width / 2;
+    //     int centerY = y + height / 2;
+    //     g.fillOval(centerX - 2, centerY - 2, 4, 4);
+    //
+    //     // Smaller surrounding stars
+    //     g.fillOval(centerX - 15, centerY - 10, 2, 2);
+    //     g.fillOval(centerX + 12, centerY - 8, 2, 2);
+    //     g.fillOval(centerX - 8, centerY + 12, 2, 2);
+    //     g.fillOval(centerX + 10, centerY + 15, 2, 2);
+    //
+    //     // Tiny stars for more detail
+    //     g.fillOval(centerX - 20, centerY + 5, 1, 1);
+    //     g.fillOval(centerX + 18, centerY - 15, 1, 1);
+    //     g.fillOval(centerX - 5, centerY - 18, 1, 1);
+    //     g.fillOval(centerX + 8, centerY + 20, 1, 1);
+    // }
 
     private void drawAliens(Graphics g) {
 
@@ -424,15 +465,15 @@ public class Scene1 extends JPanel {
         }
     }
 
-    private void drawBombing(Graphics g) {
-
-        // for (Enemy e : enemies) {
-        //     Enemy.Bomb b = e.getBomb();
-        //     if (!b.isDestroyed()) {
-        //         g.drawImage(b.getImage(), b.getX(), b.getY(), this);
-        //     }
-        // }
-    }
+    // private void drawBombing(Graphics g) {
+    //
+    //     // for (Enemy e : enemies) {
+    //     //     Enemy.Bomb b = e.getBomb();
+    //     //     if (!b.isDestroyed()) {
+    //     //         g.drawImage(b.getImage(), b.getX(), b.getY(), this);
+    //     //     }
+    //     // }
+    // }
 
     private void drawExplosions(Graphics g) {
 
@@ -778,6 +819,7 @@ public class Scene1 extends JPanel {
                     // Create a new shot and add it to the list
                     Shot shot = new Shot(x, y);
                     shots.add(shot);
+                    AudioPlayer.playOnce("src/audio/fire.wav");
                 }
             }
 
